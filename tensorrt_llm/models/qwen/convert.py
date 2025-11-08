@@ -687,7 +687,7 @@ def convert_hf_qwen(hf_model,
                                        use_gemm_woq_plugin))
 
         # Qwen3: Add q_norm and k_norm weight conversion
-        if qwen_type in ('qwen3', 'qwen3_moe'):
+        if qwen_type in ('qwen3', 'qwen3_moe', 'qwen3_omni_moe'):
             # Process q_norm.weight
             q_norm_weight = get_weight(model_params,
                                        prefix + key_list[0] + 'q_norm', dtype)

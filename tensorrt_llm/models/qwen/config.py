@@ -109,9 +109,13 @@ class QWenConfig(PretrainedConfig):
         if qwen_type == 'qwen2_audio':
             hf_config = hf_config.text_config
             hf_config.architectures = ['Qwen2ForCausalLM']
+        # Qwen3-Omni-MoE
+        if qwen_type == 'qwen3_omni_moe':
+            hf_config = hf_config.thinker_config.text_config
+            hf_config.architectures = ['Qwen3MoeForCausalLM']            
 
         valid_types = ('qwen', 'qwen2', 'qwen2_moe', 'qwen2_llava_onevision',
-                       'qwen2_vl', 'qwen2_audio', 'qwen3', 'qwen3_moe')
+                       'qwen2_vl', 'qwen2_audio', 'qwen3', 'qwen3_moe', 'qwen3_omni_moe')
         assert qwen_type in valid_types, f"Unsupported Qwen type: {qwen_type}, only {valid_types} are acceptable."
         num_key_value_heads = getattr(hf_config, "num_key_value_heads",
                                       hf_config.num_attention_heads)
@@ -120,11 +124,11 @@ class QWenConfig(PretrainedConfig):
             hf_config.hidden_size // hf_config.num_attention_heads)
         head_size = getattr(hf_config, "kv_channels", head_dim)
         hidden_act = getattr(hf_config, "hidden_act", "silu")
-        if qwen_type in ("qwen2_moe", "qwen3_moe"):
+        if qwen_type in ("qwen2_moe", "qwen3_moe", 'qwen3_omni_moe'):
             hidden_act = "swiglu"
 
         # Qwen3 models have no attention bias, while legacy models have bias
-        if qwen_type in ('qwen3', 'qwen3_moe'):
+        if qwen_type in ('qwen3', 'qwen3_moe', 'qwen3_omni_moe'):
             attn_bias = False  # Qwen3 models have no attn bias
         else:
             attn_bias = True  # Legacy Qwen models have attn bias
@@ -163,7 +167,7 @@ class QWenConfig(PretrainedConfig):
         dtype = infer_dtype(dtype, getattr(hf_config, 'torch_dtype', None))
         tie_word_embeddings = getattr(hf_config, 'tie_word_embeddings', False)
 
-        if qwen_type == 'qwen2_vl':
+        if qwen_type in ('qwen2_vl', 'qwen3_omni_moe'):
             pe_type = 'mrope'
             rotary_embedding_percentage = getattr(hf_config, 'rotary_pct', 1.0)
             rotary_embedding_dim = getattr(

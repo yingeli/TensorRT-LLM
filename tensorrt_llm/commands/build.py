@@ -533,7 +533,7 @@ def main():
             max_encoder_input_len=args.max_encoder_input_len,
             weight_streaming=args.weight_streaming,
             monitor_memory=args.monitor_memory,
-            use_mrope=getattr(model_config, "qwen_type", None) == "qwen2_vl",
+            use_mrope=getattr(model_config, "qwen_type", None) in ("qwen2_vl", "qwen3_omni_moe"),
             plugin_config=plugin_config)
     else:
         build_config = BuildConfig.from_json_file(args.build_config)
