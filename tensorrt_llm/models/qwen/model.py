@@ -136,6 +136,7 @@ class QWenDecoderLayer(Module):
         attention_params=None,
         lora_layer_params=None,
         mrope_params=None,
+        position_ids=None,
     ):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -148,6 +149,7 @@ class QWenDecoderLayer(Module):
             attention_params=attention_params,
             lora_layer_params=lora_layer_params,
             mrope_params=mrope_params,
+            position_embedding=position_ids,
         )
         if use_cache:
             attention_output, presents = attention_output
@@ -216,7 +218,8 @@ class QWenModel(Module):
             kv_cache_params=kv_cache_params,
             attention_params=attention_params,
             lora_params=lora_params,
-            mrope_params=mrope_params)
+            mrope_params=mrope_params,
+            position_ids=position_ids)
 
         if use_cache:
             hidden_states, presents = hidden_states

@@ -34,6 +34,7 @@ class QWenConfig(PretrainedConfig):
                  num_labels: int = 1,
                  mlp_only_layers: Optional[list] = None,
                  decoder_sparse_step: int = 1,
+                 mrope_position_dims: Optional[int] = None,
                  **kwargs):
         self.mlp_bias = mlp_bias
         self.attn_bias = attn_bias
@@ -44,6 +45,7 @@ class QWenConfig(PretrainedConfig):
         self.use_logn_attn = use_logn_attn
         self.mlp_only_layers = mlp_only_layers or []
         self.decoder_sparse_step = decoder_sparse_step
+        self.mrope_position_dims = mrope_position_dims
         if moe is None:
             # Legacy MOE config fields
             moe = MoeConfig(num_experts=kwargs.pop('moe_num_experts', 0),
@@ -71,6 +73,7 @@ class QWenConfig(PretrainedConfig):
         output['mlp_only_layers'] = self.mlp_only_layers
         output['decoder_sparse_step'] = self.decoder_sparse_step
         output['moe'] = self.moe.to_dict()
+        output['mrope_position_dims'] = self.mrope_position_dims
         return output
 
     @classmethod
@@ -167,6 +170,7 @@ class QWenConfig(PretrainedConfig):
         dtype = infer_dtype(dtype, getattr(hf_config, 'torch_dtype', None))
         tie_word_embeddings = getattr(hf_config, 'tie_word_embeddings', False)
 
+        mrope_position_dims = None
         if qwen_type in ('qwen2_vl', 'qwen3_omni_moe'):
             pe_type = 'mrope'
             rotary_embedding_percentage = getattr(hf_config, 'rotary_pct', 1.0)
@@ -174,10 +178,18 @@ class QWenConfig(PretrainedConfig):
                 hf_config, 'rotary_dim',
                 int(hf_config.hidden_size / hf_config.num_attention_heads *
                     rotary_embedding_percentage))
+            if rotary_scaling is None:
+                rotary_scaling = {}
             rotary_scaling['type'] = 'mrope'
+            if qwen_type == 'qwen3_omni_moe':
+                mrope_position_dims = 3
+            else:
+                mrope_position_dims = getattr(hf_config, 'mrope_position_dims',
+                                              None)
         else:
             pe_type = 'rope_gpt_neox'
             rotary_embedding_dim = None
+            mrope_position_dims = None
 
         return cls(
             architecture=hf_config.architectures[0],
@@ -211,4 +223,5 @@ class QWenConfig(PretrainedConfig):
             quantization=quant_config,
             num_labels=num_labels,
             tie_word_embeddings=tie_word_embeddings,
+            mrope_position_dims=mrope_position_dims,
             **kwargs)
