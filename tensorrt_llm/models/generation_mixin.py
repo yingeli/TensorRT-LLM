@@ -542,7 +542,11 @@ class GenerationMixin:
         opt_batch_size=None,
         pp_reduce_scatter: bool = False,
         mrope_rotary_cos_sin_size: int = None,
+        mrope_position_dims: int = None,
     ):
+        assert not (mrope_position_dims is not None
+                    and mrope_rotary_cos_sin_size is None), \
+            "mrope_position_dims is set but mrope_rotary_cos_sin_size is missing. Pass both arguments to enable mRoPE inputs."
 
         enable_ctx_gen_opt_profiles = GenerationMixin.has_ctx_gen_opt_profiles(
             use_gpt_attention_plugin=use_gpt_attention_plugin,
@@ -591,6 +595,18 @@ class GenerationMixin:
                              position_ids_num_tokens_range),
                         ]),
                     )
+                elif mrope_position_dims and mrope_position_dims > 1:
+                    position_ids = Tensor(
+                        name='position_ids',
+                        dtype=trt.int32,
+                        shape=[mrope_position_dims, -1],
+                        dim_range=OrderedDict([
+                            ('mrope_axis',
+                             [mrope_position_dims] * num_profiles),
+                            ('position_ids_num_tokens_range',
+                             position_ids_num_tokens_range),
+                        ]),
+                    )
                 else:
                     position_ids = Tensor(
                         name='position_ids',
@@ -632,6 +648,19 @@ class GenerationMixin:
                         dim_range=OrderedDict([
                             ('batch_size_beam_width', bb_range),
                             ('2', [2] * num_profiles),
+                            ('position_ids_inlen_range',
+                             position_ids_inlen_range),
+                        ]),
+                    )
+                elif mrope_position_dims and mrope_position_dims > 1:
+                    position_ids = Tensor(
+                        name='position_ids',
+                        dtype=trt.int32,
+                        shape=[mrope_position_dims, -1, -1],
+                        dim_range=OrderedDict([
+                            ('mrope_axis',
+                             [mrope_position_dims] * num_profiles),
+                            ('batch_size_beam_width', bb_range),
                             ('position_ids_inlen_range',
                              position_ids_inlen_range),
                         ]),

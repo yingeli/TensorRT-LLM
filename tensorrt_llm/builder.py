@@ -1241,6 +1241,9 @@ def build(model: PretrainedModel, build_config: BuildConfig) -> Engine:
         if hasattr(model.config, "position_embedding_type") and model.config.position_embedding_type.name == "mrope":
             prepare_input_args[
                 'mrope_rotary_cos_sin_size'] = model.config.max_position_embeddings * model.config.rotary_embedding_dim
+            if getattr(model.config, "mrope_position_dims", None):
+                prepare_input_args[
+                    'mrope_position_dims'] = model.config.mrope_position_dims
         if build_config.speculative_decoding_mode == SpeculativeDecodingMode.EAGLE and not build_config.plugin_config.use_paged_context_fmha:
             logger.warning(
                 "Paged Context FMHA is required for EAGLE. Turning it on")

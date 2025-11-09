@@ -837,6 +837,7 @@ class PretrainedModel(Module,
         opt_batch_size: int = 0,
         num_hidden_layers: int = None,
         mrope_rotary_cos_sin_size: int = None,
+        mrope_position_dims: int = None,
     ):
         '''@brief: Prepare inputs Tensors for the model, the given sizes are used to determine the
             ranges of the dimensions of when using TRT dynamic shapes.
@@ -900,7 +901,8 @@ class PretrainedModel(Module,
             streamingllm=streamingllm,
             opt_batch_size=opt_batch_size,
             pp_reduce_scatter=pp_reduce_scatter,
-            mrope_rotary_cos_sin_size=mrope_rotary_cos_sin_size)
+            mrope_rotary_cos_sin_size=mrope_rotary_cos_sin_size,
+            mrope_position_dims=mrope_position_dims)
 
         result = {
             'input_ids':
