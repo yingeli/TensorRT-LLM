@@ -170,7 +170,6 @@ class QWenConfig(PretrainedConfig):
         dtype = infer_dtype(dtype, getattr(hf_config, 'torch_dtype', None))
         tie_word_embeddings = getattr(hf_config, 'tie_word_embeddings', False)
 
-        mrope_position_dims = None
         if qwen_type in ('qwen2_vl', 'qwen3_omni_moe'):
             pe_type = 'mrope'
             rotary_embedding_percentage = getattr(hf_config, 'rotary_pct', 1.0)
@@ -178,18 +177,12 @@ class QWenConfig(PretrainedConfig):
                 hf_config, 'rotary_dim',
                 int(hf_config.hidden_size / hf_config.num_attention_heads *
                     rotary_embedding_percentage))
-            if rotary_scaling is None:
-                rotary_scaling = {}
             rotary_scaling['type'] = 'mrope'
             if qwen_type == 'qwen3_omni_moe':
                 mrope_position_dims = 3
-            else:
-                mrope_position_dims = getattr(hf_config, 'mrope_position_dims',
-                                              None)
         else:
             pe_type = 'rope_gpt_neox'
             rotary_embedding_dim = None
-            mrope_position_dims = None
 
         return cls(
             architecture=hf_config.architectures[0],
