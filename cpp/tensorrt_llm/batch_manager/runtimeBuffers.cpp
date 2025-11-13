@@ -547,8 +547,32 @@ void RuntimeBuffers::setFromInputs(RequestVector const& contextRequests, Request
             if (positionIds.has_value())
             {
                 TLLM_CHECK_WITH_INFO(!(isChatGlm || isGlm), "ChatGLM-6B and Glm only use the default initialization");
-                positionIdsHost.insert(positionIdsHost.end(), positionIds.value()->begin() + beginCompute,
-                    positionIds.value()->begin() + endCompute);
+                // Support multi-axis RoPE position ids provided as a flattened vector
+                // of shape [leading_dim * total_prompt_len]. When leading_dim > 1,
+                // slice per-axis segments and append them consecutively for this chunk.
+                auto const& posVec = *positionIds.value();
+                auto const totalPromptLen = static_cast<SizeType32>(llmReq->getTokens(0).size());
+                int32_t leadingDim = 1;
+                if (totalPromptLen > 0 && (posVec.size() % totalPromptLen == 0))
+                {
+                    leadingDim = static_cast<int32_t>(posVec.size() / totalPromptLen);
+                }
+                if (leadingDim <= 1)
+                {
+                    positionIdsHost.insert(positionIdsHost.end(), posVec.begin() + beginCompute, posVec.begin() + endCompute);
+                }
+                else
+                {
+                    // Append [axis0_chunk, axis1_chunk, ..., axis{leadingDim-1}_chunk]
+                    positionIdsHost.reserve(positionIdsHost.size() + static_cast<size_t>(leadingDim) * contextChunkSize);
+                    for (int32_t axis = 0; axis < leadingDim; ++axis)
+                    {
+                        auto const axisOffset = static_cast<size_t>(axis) * totalPromptLen;
+                        positionIdsHost.insert(positionIdsHost.end(),
+                            posVec.begin() + axisOffset + beginCompute,
+                            posVec.begin() + axisOffset + endCompute);
+                    }
+                }
             }
             else
             {
@@ -654,9 +678,24 @@ void RuntimeBuffers::setFromInputs(RequestVector const& contextRequests, Request
                     {
                         TLLM_CHECK_WITH_INFO(
                             !(isChatGlm || isGlm), "ChatGLM-6B and Glm only use the default initialization");
-                        auto last_context_position_id = positionIds.value()->back();
-                        positionIdsHost.push_back(
-                            static_cast<SizeType32>(last_context_position_id + sequenceLen - promptLen));
+                        // For multi-axis RoPE, push one id per axis for the generation token.
+                        auto const& posVec = *positionIds.value();
+                        int32_t leadingDim = 1;
+                        if (promptLen > 0 && (posVec.size() % promptLen == 0))
+                        {
+                            leadingDim = static_cast<int32_t>(posVec.size() / promptLen);
+                        }
+                        // Use the last context id from axis 0 as base; for mRoPE all axes share the same scalar value.
+                        auto const last_context_position_id = posVec.empty() ? 0 : posVec.back();
+                        auto const next_id = static_cast<SizeType32>(last_context_position_id + sequenceLen - promptLen);
+                        if (leadingDim <= 1)
+                        {
+                            positionIdsHost.push_back(next_id);
+                        }
+                        else
+                        {
+                            positionIdsHost.insert(positionIdsHost.end(), static_cast<size_t>(leadingDim), next_id);
+                        }
                     }
                     else
                     {
