@@ -312,28 +312,10 @@ void TransformerBuffers::getBuffers(
     TLLM_LOG_TRACE("%s stop", __PRETTY_FUNCTION__);
 }
 
-namespace
-{
-inline int32_t getLeadingPositionDim(runtime::TllmRuntime const& runtime)
-{
-    auto const& engine = runtime.getEngine();
-    // Inspect profile 0; all profiles share the same leading dim for position ids.
-    auto const minShape
-        = engine.getProfileShape(TransformerBuffers::kPositionIdsTensorName, 0, nvinfer1::OptProfileSelector::kMIN);
-    if (minShape.nbDims >= 2 && minShape.d[0] > 1)
-    {
-        return static_cast<int32_t>(minShape.d[0]);
-    }
-    return 1;
-}
-} // namespace
-
 void TransformerBuffers::copyPositionIds(runtime::TllmRuntime const& runtime,
     std::vector<SizeType32> const& positionIdsHost, bool isChatGlm, TensorPtr const& decoderPositionIds)
 {
     auto const& manager = runtime.getBufferManager();
-    int32_t const leadingDim = getLeadingPositionDim(runtime);
-
     if (isChatGlm)
     {
         positionIds->reshape(ITensor::makeShape({2, static_cast<int>(positionIdsHost.size()) / 2}));
@@ -341,16 +323,8 @@ void TransformerBuffers::copyPositionIds(runtime::TllmRuntime const& runtime,
     }
     else if (decoderPositionIds == nullptr)
     {
-        // Copy as 1-D vector, then reshape to the engine-expected layout.
         positionIds->reshape(ITensor::makeShape({static_cast<int>(positionIdsHost.size())}));
         manager.copy(positionIdsHost.data(), *positionIds);
-        if (leadingDim > 1)
-        {
-            TLLM_CHECK_WITH_INFO(positionIdsHost.size() % leadingDim == 0,
-                "Position ids size is not divisible by the expected leading dimension (%d).", leadingDim);
-            auto const secondDim = static_cast<int32_t>(positionIdsHost.size() / leadingDim);
-            positionIds->reshape(ITensor::makeShape({leadingDim, secondDim}));
-        }
     }
     else
     {
@@ -360,14 +334,6 @@ void TransformerBuffers::copyPositionIds(runtime::TllmRuntime const& runtime,
         positionIds->reshape(ITensor::makeShape({contextPositionIdsLen + generationPositionIdsLen}));
         manager.copy(positionIdsHost.data(), *ITensor::slice(positionIds, 0, contextPositionIdsLen));
         manager.copy(*decoderPositionIds, *ITensor::slice(positionIds, contextPositionIdsLen));
-        if (leadingDim > 1)
-        {
-            TLLM_CHECK_WITH_INFO((contextPositionIdsLen + generationPositionIdsLen) % leadingDim == 0,
-                "Position ids size is not divisible by the expected leading dimension (%d).", leadingDim);
-            auto const secondDim
-                = static_cast<int32_t>((contextPositionIdsLen + generationPositionIdsLen) / leadingDim);
-            positionIds->reshape(ITensor::makeShape({leadingDim, secondDim}));
-        }
     }
 }
 
