@@ -323,7 +323,18 @@ void TransformerBuffers::copyPositionIds(runtime::TllmRuntime const& runtime,
     }
     else if (decoderPositionIds == nullptr)
     {
-        positionIds->reshape(ITensor::makeShape({static_cast<int>(positionIdsHost.size())}));
+        // For mRoPE engines expecting a leading 3-dim, accept a flattened 1D vector of length 3*L
+        // and reshape to (3, L). Otherwise, keep legacy 1D shape.
+        auto const total = static_cast<int>(positionIdsHost.size());
+        if (total % 3 == 0 && total > 0)
+        {
+            auto const L = total / 3;
+            positionIds->reshape(ITensor::makeShape({3, L}));
+        }
+        else
+        {
+            positionIds->reshape(ITensor::makeShape({total}));
+        }
         manager.copy(positionIdsHost.data(), *positionIds);
     }
     else
