@@ -216,8 +216,7 @@ class QWenModel(Module):
             kv_cache_params=kv_cache_params,
             attention_params=attention_params,
             lora_params=lora_params,
-            mrope_params=mrope_params,
-            position_ids=position_ids)
+            mrope_params=mrope_params)
 
         if use_cache:
             hidden_states, presents = hidden_states
