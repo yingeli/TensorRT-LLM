@@ -531,15 +531,18 @@ void TllmRuntime::setInputTensorsImpl(SizeType32 contextIndex, TensorMap const& 
 
         // Allow flattened 1D position_ids (length 3*L) to be reshaped to (3, L)
         // for engines that expect a leading 3-dim (e.g., Qwen3 MRoPE text rotary).
-        if (name == std::string("position_ids"))
+        // Allow 1D position_ids to be reshaped for mRoPE engines expecting (3, L)
+        // Handles both 1D L (fallback) and 1D 3*L (flattened) inputs at binding time.
+        if (name == std::string("position_ids") && tensorShape.nbDims == 1 && tensorShape.d[0] > 0)
         {
-            // Only reshape when provided as a 1D vector and divisible by 3
-            if (tensorShape.nbDims == 1 && tensorShape.d[0] > 0 && (tensorShape.d[0] % 3 == 0))
+            auto const minShape = mEngine->getProfileShape(name.c_str(), contextIndex, nvinfer1::OptProfileSelector::kMIN);
+            // Engine contract: (3, L)
+            if (minShape.nbDims == 2 && minShape.d[0] == 3)
             {
-                auto const L = static_cast<SizeType32>(tensorShape.d[0] / 3);
-                auto const reshaped = ITensor::makeShape({3, L});
-                TLLM_LOG_DEBUG("Reshape position_ids from ( %d ) to (3, %d)", (int) tensorShape.d[0], (int) L);
-                tensorShape = reshaped;
+                auto const len = static_cast<SizeType32>(tensorShape.d[0]);
+                auto const L = (len % 3 == 0) ? (len / 3) : len;
+                TLLM_LOG_DEBUG("Reshape position_ids from ( %d ) to (3, %d) based on engine profile", (int) len, (int) L);
+                tensorShape = ITensor::makeShape({3, L});
             }
         }
         
