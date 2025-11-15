@@ -529,6 +529,20 @@ void TllmRuntime::setInputTensorsImpl(SizeType32 contextIndex, TensorMap const& 
 
         auto tensorShape = tensor->getShape();
 
+        // Allow flattened 1D position_ids (length 3*L) to be reshaped to (3, L)
+        // for engines that expect a leading 3-dim (e.g., Qwen3 MRoPE text rotary).
+        if (name == std::string("position_ids"))
+        {
+            // Only reshape when provided as a 1D vector and divisible by 3
+            if (tensorShape.nbDims == 1 && tensorShape.d[0] > 0 && (tensorShape.d[0] % 3 == 0))
+            {
+                auto const L = static_cast<SizeType32>(tensorShape.d[0] / 3);
+                auto const reshaped = ITensor::makeShape({3, L});
+                TLLM_LOG_DEBUG("Reshape position_ids from ( %d ) to (3, %d)", (int) tensorShape.d[0], (int) L);
+                tensorShape = reshaped;
+            }
+        }
+        
         // Change shape of `cache_indirection` for Variable-Beam-Width-Search
         // TODO: remove this hack if beamWidth of each request are passed into GptAttentionPlugin by input tensor
         if (name == "cache_indirection" && mCurrentBeamWidths.size() > 0)
