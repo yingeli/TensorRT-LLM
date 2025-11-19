@@ -727,10 +727,10 @@ class AutoTuner:
         new_tuning_failure_occured = False
 
         for p in profiles:
-            tensors = self._prepare_input_tensors(p, inputs)
             is_cache_hit, *_ = self.profiling_cache.search_cache(
                 custom_op, runners, p.get_opt_shapes(), tuning_config)
             if not is_cache_hit:
+                tensors = self._prepare_input_tensors(p, inputs)
                 # Initialize runner and tactic as None in case of no valid tactic or runners are found
                 best_runner_id, best_tactic, min_time, has_tuning_failure_occured = self._profile_runners(
                     custom_op, runners, tensors, p, tuning_config, **kwargs)
@@ -932,9 +932,9 @@ class AutoTuner:
         dynamic_dims = []
 
         for spec in tuning_config.dynamic_tensor_specs:
-            assert inspect.isfunction(spec.gen_tuning_buckets) or isinstance(spec.gen_tuning_buckets, (list, tuple)), \
+            assert callable(spec.gen_tuning_buckets) or isinstance(spec.gen_tuning_buckets, (list, tuple)), \
                 "The given dynamic dimension must provide a opt value generation function or a list of opt values"
-            if inspect.isfunction(spec.gen_tuning_buckets):
+            if callable(spec.gen_tuning_buckets):
                 if tuning_config.tune_max_num_tokens is None:
                     # Use the current input size as the opt value
                     opt_shapes = spec.gen_tuning_buckets(
@@ -1067,7 +1067,11 @@ class AutoTuner:
         # One solution is to manituplate the tensor content to make it more like the real data
         # during the tuning process. This can by controlled in the preparation phase by the runner.
         # It must not use all zero tensors. Otherwise the timing results become unreliable.
-        return torch.randint(-5, 5, shapes, device=device).to(dtype)
+        if dtype == torch.float4_e2m1fn_x2:
+            return torch.randint(-5, 5, shapes,
+                                 device=device).to(torch.uint8).view(dtype)
+        else:
+            return torch.randint(-5, 5, shapes, device=device).to(dtype)
 
     def _prepare_input_tensors(
             self, profile: OptimizationProfile,

@@ -474,7 +474,6 @@ class DeepGemmFusedMoE(CutlassFusedMoE):
     ) -> torch.Tensor:
         if isinstance(x, Fp4QuantizedTensor):
             assert output_dtype is not None
-            output_dtype = output_dtype
         else:
             output_dtype = x.dtype
 
@@ -706,7 +705,7 @@ class DeepGemmFusedMoE(CutlassFusedMoE):
                 all_rank_num_tokens_list = [[
                     val[idx_chunk] for val in all_rank_chunk_size_list
                 ] for idx_chunk in range(num_chunks)]
-                chunk_size_list = all_rank_chunk_size_list[self.rank]
+                chunk_size_list = all_rank_chunk_size_list[self.parallel_rank]
             else:
                 all_rank_num_tokens_list = [None] * num_chunks
                 chunk_size_list = self.split_chunk(x.shape[0], num_chunks)
@@ -778,6 +777,6 @@ class DeepGemmFusedMoE(CutlassFusedMoE):
             outputs = torch.cat(outputs_list)
 
         if self.use_dp and self.parallel_size > 1:
-            rank = self.mapping.tp_rank
+            rank = self.parallel_rank
             outputs = outputs[:all_rank_num_tokens[rank]]
         return outputs
