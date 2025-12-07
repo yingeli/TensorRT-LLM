@@ -13,6 +13,7 @@ from ...memory_buffer_utils import get_memory_buffers
 from ...model_config import ModelConfig
 from ...utils import AuxStreamType, EventType, Fp4QuantizedTensor
 from .fused_moe_cutlass import CutlassFusedMoE
+from .interface import AlltoallMethodType
 from .quantization import (DeepSeekFP8BlockScalesFusedMoEMethodDeepGemm,
                            MoEWeightLoadingMode, UnquantizedFusedMoEMethod)
 from .routing import BaseMoeRoutingMethod
@@ -347,8 +348,7 @@ def set_strides(workspace: torch.Tensor, g: int, m: int, k: int):
 
 
 class DeepGemmFusedMoE(CutlassFusedMoE):
-    """
-    Python Flow of Fused Mixture of Experts (MoE) Layer.
+    """DeepGEMM flow of fused mixture of experts (MoE) Layer.
 
     Args:
         num_experts (int): Number of experts in the MoE layer.
@@ -359,11 +359,6 @@ class DeepGemmFusedMoE(CutlassFusedMoE):
         dtype (Optional[torch.dtype]): Data type for the weights.
         reduce_results (bool): Whether to reduce the results across devices.
         model_config (ModelConfig): Configuration object for the model.
-
-    This backend is composed of multiple custom ops:
-    1. moe_permute_op: permute the input tensor and the expert selected tensor.
-    2. cute_dsl_fp8_group_blockwise_gemm_ref: a reference implementation of the cute_dsl_fp8_group_blockwise_gemm.
-    3. moe_finalize_scale_op: finalize the scale of the output tensor.
     """
 
     # To reuse pytorch memory segments allocated during graph capture.
@@ -386,18 +381,19 @@ class DeepGemmFusedMoE(CutlassFusedMoE):
         apply_router_weight_on_input: bool = False,
         layer_idx: Optional[int] = None,
     ):
-        if model_config.moe_max_num_tokens is None:
-            moe_max_num_tokens = model_config.max_num_tokens * model_config.mapping.dp_size
-            # The default moe_max_num_tokens is calculated from the following formula:
-            # max_isl = 8196, max_batch_size = 1024, mtp = 0
-            # max_num_tokens = ((mtp+1)*max_batch_size+max_isl+128+63)//64*64 = 9344
-            # moe_max_num_tokens = max_num_tokens * 2 = 18688
-            # It can avoid OOM for 8k/1k cases.
-            default_moe_max_num_tokens = 18688
-            if moe_max_num_tokens > default_moe_max_num_tokens:
-                model_config._frozen = False
-                model_config.moe_max_num_tokens = default_moe_max_num_tokens
-                model_config._frozen = True
+        # moe_max_num_tokens is set in ModelConfig.__post_init__ if not specified
+        # The default value is max_num_tokens * dp_size
+        # For DeepGemm, we need to limit moe_max_num_tokens to avoid OOM
+        # The default moe_max_num_tokens is calculated from the following formula:
+        # max_isl = 8196, max_batch_size = 1024, mtp = 0
+        # max_num_tokens = ((mtp+1)*max_batch_size+max_isl+128+63)//64*64 = 9344
+        # moe_max_num_tokens = max_num_tokens * 2 = 18688
+        # It can avoid OOM for 8k/1k cases.
+        default_moe_max_num_tokens = 18688
+        if model_config.moe_max_num_tokens > default_moe_max_num_tokens:
+            model_config._frozen = False
+            model_config.moe_max_num_tokens = default_moe_max_num_tokens
+            model_config._frozen = True
 
         super().__init__(
             routing_method=routing_method,
@@ -461,6 +457,10 @@ class DeepGemmFusedMoE(CutlassFusedMoE):
                 )
         else:
             return UnquantizedFusedMoEMethod()
+
+    def select_alltoall_method_type(self) -> AlltoallMethodType:
+        """DeepGEMM backend currently doesn't support alltoall; honor overrides but default to disabled."""
+        return AlltoallMethodType.NotEnabled
 
     @nvtx_range("[DG] forward")
     def forward_chunk(

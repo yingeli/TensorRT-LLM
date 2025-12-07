@@ -631,6 +631,15 @@ def deepseek_v3_model_root(request):
     return deepseek_v3_model_root
 
 
+@pytest.fixture(scope="function")
+def gpt_oss_model_root(request):
+    models_root = os.path.join(llm_models_root(), "gpt_oss")
+    if request.param == "gpt-oss-20b":
+        gpt_oss_model_root = os.path.join(models_root, "gpt-oss-20b")
+    assert exists(gpt_oss_model_root), f"{gpt_oss_model_root} does not exist!"
+    return gpt_oss_model_root
+
+
 @pytest.fixture(scope="session")
 def trt_performance_cache_name():
     return "performance.cache"
@@ -667,9 +676,11 @@ def trt_gpu_clock_lock(request):
     gpu_list = get_gpu_device_list()
     gpu_ids = [gpu.split()[1][:-1] for gpu in gpu_list]  # Extract GPU IDs
     gpu_ids_str = ",".join(gpu_ids)
+    enable_clock_locking = request.config.getoption("--enable-gpu-clock-lock")
     gpu_clock_lock = GPUClockLock(
         gpu_id=gpu_ids_str,
         interval_ms=1000.0,
+        enable_clock_locking=enable_clock_locking,
     )
 
     yield gpu_clock_lock
@@ -1343,6 +1354,10 @@ def llm_lora_model_root(request):
                 os.path.join(
                     models_root, "nemotron-nas",
                     "Llama-3_3-Nemotron-Super-49B-v1-lora-adapter_NIM_r32"))
+        elif item == "gpt-oss-20b-lora-adapter_NIM_r8":
+            model_root_list.append(
+                os.path.join(models_root, "gpt_oss",
+                             "gpt-oss-20b-lora-adapter_NIM_r8"))
 
     return ",".join(model_root_list)
 
@@ -2131,6 +2146,29 @@ def pytest_addoption(parser):
         "Number of completed tests before triggering a periodic save (default: 10). "
         "Only used with --periodic-junit.",
     )
+    parser.addoption(
+        "--periodic-junit-xmlpath",
+        action="store",
+        default=None,
+        help="Path to the output XML file for periodic JUnit XML reporter. "
+        "Only used with --periodic-junit.",
+    )
+    parser.addoption(
+        "--enable-gpu-clock-lock",
+        action="store_true",
+        default=False,
+        help="Enable GPU clock locking during tests. "
+        "By default, GPU clock locking is disabled.",
+    )
+    parser.addoption(
+        "--periodic-save-unfinished-test",
+        action="store_true",
+        default=False,
+        help=
+        "Save unfinished test name to unfinished_test.txt during test execution (default: False). "
+        "This helps identify which test was running when a timeout or crash occurs. "
+        "Only used with --periodic-junit.",
+    )
 
 
 @pytest.hookimpl(trylast=True)
@@ -2235,17 +2273,21 @@ def pytest_configure(config):
     # Initialize PeriodicJUnitXML reporter if enabled
     periodic = config.getoption("--periodic-junit", default=False)
     output_dir = config.getoption("--output-dir", default=None)
-
+    periodic_junit_xmlpath = config.getoption("--periodic-junit-xmlpath",
+                                              default=None)
     if periodic and output_dir:
         periodic_interval = config.getoption("--periodic-interval")
         periodic_batch_size = config.getoption("--periodic-batch-size")
+        periodic_save_unfinished_test = config.getoption(
+            "--periodic-save-unfinished-test", default=False)
 
         # Create output directory early (like --junitxml does) to avoid conflicts with other plugins
         # that may need to write to the same directory (e.g., pytest-split)
         os.makedirs(output_dir, exist_ok=True)
 
         # Create the reporter with logger
-        xmlpath = os.path.join(output_dir, "results.xml")
+        xmlpath = periodic_junit_xmlpath or os.path.join(
+            output_dir, "results.xml")
         reporter = PeriodicJUnitXML(
             xmlpath=xmlpath,
             interval=periodic_interval,
@@ -2254,6 +2296,7 @@ def pytest_configure(config):
                 'info': print_info,
                 'warning': print_warning
             },
+            save_unfinished_test=periodic_save_unfinished_test,
         )
 
         # Configure and register the reporter
@@ -2265,6 +2308,7 @@ def pytest_configure(config):
             f"  Interval: {periodic_interval}s ({periodic_interval/60:.1f} min)"
         )
         print_info(f"  Batch size: {periodic_batch_size} tests")
+        print_info(f"  Save unfinished test: {periodic_save_unfinished_test}")
     elif periodic and not output_dir:
         print_warning(
             "Warning: --periodic-junit requires --output-dir to be set. "
@@ -2326,6 +2370,8 @@ def deselect_by_test_model_suites(test_model_suites, items, test_prefix,
     if periodic and output_dir:
         periodic_interval = config.getoption("--periodic-interval")
         periodic_batch_size = config.getoption("--periodic-batch-size")
+        periodic_save_unfinished_test = config.getoption(
+            "--periodic-save-unfinished-test", default=False)
 
         # Create the reporter with logger
         xmlpath = os.path.join(output_dir, "results.xml")
@@ -2337,6 +2383,7 @@ def deselect_by_test_model_suites(test_model_suites, items, test_prefix,
                 'info': print_info,
                 'warning': print_warning
             },
+            save_unfinished_test=periodic_save_unfinished_test,
         )
 
         # Configure and register the reporter
@@ -2348,6 +2395,7 @@ def deselect_by_test_model_suites(test_model_suites, items, test_prefix,
             f"  Interval: {periodic_interval}s ({periodic_interval/60:.1f} min)"
         )
         print_info(f"  Batch size: {periodic_batch_size} tests")
+        print_info(f"  Save unfinished test: {periodic_save_unfinished_test}")
     elif periodic and not output_dir:
         print_warning(
             "Warning: --periodic-junit requires --output-dir to be set. "
@@ -2681,6 +2729,7 @@ def torch_empty_cache() -> None:
     Manually empty the torch CUDA cache before each test, to reduce risk of OOM errors.
     """
     if torch.cuda.is_available():
+        gc.collect()
         torch.cuda.empty_cache()
         gc.collect()
 
