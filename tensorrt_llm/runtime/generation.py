@@ -2662,15 +2662,18 @@ class GenerationSession(object):
                                'cross_attention_packed_mask')
                 else:
                     # create a full 1 cross_attention_mask because it is necessary in generation phase
+                    # Use batch_size * beam_width so that every beam has its own
+                    # mask row; batch_size alone causes out-of-bounds reads for
+                    # beams > 0.
                     add_tensor(
-                        torch.ones((batch_size,
+                        torch.ones((batch_size * beam_width,
                                     np.asarray(list(
                                         encoder_output.shape)[:-1]).prod()),
                                    dtype=torch.bool,
                                    device=self.device), "cross_attention_mask")
                     # Empty packed mask is passed in the generation phase as it is not used.
                     add_tensor(
-                        torch.empty((batch_size, 1),
+                        torch.empty((batch_size * beam_width, 1),
                                     dtype=torch.int32,
                                     device=self.device),
                         "cross_attention_packed_mask")
@@ -3133,8 +3136,13 @@ class GenerationSession(object):
                 # In streaming mode, this results in incorrect decoding in the following steps.
                 beam_hyps_args = copy.deepcopy(beam_hyps_args)
 
+            # gather_tree modifies sequence_length_buffer in-place.
+            # When in_progress, use a clone so the live buffer is not corrupted
+            # for the subsequent dynamic_decoder.forward() call.
+            seq_len_for_gather = (self.sequence_length_buffer.clone()
+                                  if in_progress else self.sequence_length_buffer)
             final_output_ids = self.gather_tree(
-                self.sequence_length_buffer, self.output_ids, self.parent_ids,
+                seq_len_for_gather, self.output_ids, self.parent_ids,
                 self.end_ids, context_lengths, self.cum_log_probs,
                 self.log_probs, self.log_probs_tiled, *beam_hyps_args,
                 self.finished, self.length_penalty, batch_size, beam_width,
@@ -3697,6 +3705,28 @@ class GenerationSession(object):
                             numel = 2 * b * h * (max_context_length + step) * d
                             self.buffer[key] = _contiguous_tile_beam_width(
                                 self.buffer[key], numel, beam_width)
+            else:
+                # Paged KV cache: the context phase runs with beam_width=1
+                # and writes KV data only to beam 0's blocks.  For blocks
+                # that are not shared across beams (each beam owns a
+                # separate physical block), we must copy beam 0's context
+                # KV data so that all beams can attend to it.
+                if self.has_attn_layers:
+                    offsets = self.pools_kv_cache_manager.get_block_offsets(
+                        beam_width)
+                    for pool_idx, pool in enumerate(
+                            self._memory_pool_allocator._pool_pointers):
+                        num_layers_x2 = pool.shape[1] * 2
+                        pool_offsets = offsets[pool_idx]
+                        for bi in range(batch_size):
+                            beam0_k = pool_offsets[bi, 0, 0]
+                            for bm in range(1, beam_width):
+                                beamk_k = pool_offsets[bi, bm, 0]
+                                for blk in range(beam0_k.numel()):
+                                    if beam0_k[blk] != beamk_k[blk]:
+                                        src = beam0_k[blk].item() // num_layers_x2
+                                        dst = beamk_k[blk].item() // num_layers_x2
+                                        pool[dst].copy_(pool[src])
 
             if self.mapping.is_last_pp_rank():
                 self.buffer['logits'] = _tile_beam_width(
