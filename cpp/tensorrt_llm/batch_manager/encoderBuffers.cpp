@@ -24,6 +24,7 @@
 #include "tensorrt_llm/runtime/iBuffer.h"
 #include "tensorrt_llm/runtime/iTensor.h"
 
+#include <numeric>
 #include <valarray>
 
 using namespace tensorrt_llm::runtime;
@@ -84,6 +85,38 @@ void EncoderBuffers::init(
     if (modelConfig.useLanguageAdapter())
     {
         languageAdapterRoutings = manager.emptyTensor(MemoryType::kGPU, TRTDataType<SizeType32>::value);
+    }
+
+    // Prompt tuning buffers for encoder (e.g., Florence2 p-tuning)
+    // Prompt tuning inputs are only consumed on first PP rank (embedding layer side).
+    if (modelConfig.usePromptTuning() && worldConfig.isFirstPipelineParallelRank())
+    {
+        auto const maxPetSize = modelConfig.getMaxPromptEmbeddingTableSize();
+        TLLM_CHECK_WITH_INFO(maxBatchSize > 0, "maxBatchSize must be > 0 when encoder prompt tuning is enabled.");
+        TLLM_CHECK_WITH_INFO(maxPetSize > 0,
+            "maxPromptEmbeddingTableSize must be > 0 when encoder prompt tuning is enabled.");
+        TLLM_CHECK_WITH_INFO(maxPetSize % maxBatchSize == 0,
+            "Encoder prompt tuning requires max_prompt_embedding_table_size (%d) to be divisible by max_batch_size "
+            "(%d). The implementation allocates one fixed-size prompt slot per request: "
+            "mMaxPromptVocabSize = max_prompt_embedding_table_size / max_batch_size.",
+            maxPetSize, maxBatchSize);
+        mMaxPromptVocabSize = maxPetSize / maxBatchSize;
+        TLLM_CHECK_WITH_INFO(mMaxPromptVocabSize > 0,
+            "mMaxPromptVocabSize must be > 0. Computed from max_prompt_embedding_table_size (%d) / max_batch_size "
+            "(%d).",
+            maxPetSize, maxBatchSize);
+        auto const hiddenSizeFull = modelConfig.getHiddenSize() * worldConfig.getTensorParallelism();
+
+        promptEmbeddingTable
+            = manager.gpu(ITensor::makeShape({maxPetSize, hiddenSizeFull}), modelConfig.getDataType());
+        promptTasks = manager.emptyTensor(MemoryType::kGPU, nvinfer1::DataType::kINT32);
+        promptVocabSize = manager.gpu(ITensor::makeShape({1}), nvinfer1::DataType::kINT32);
+
+        // Write the max prompt vocab size (constant for the lifetime of the buffers)
+        auto promptVocabSizeHost
+            = BufferManager::pinned(ITensor::makeShape({1}), nvinfer1::DataType::kINT32);
+        *bufferCast<SizeType32>(*promptVocabSizeHost) = mMaxPromptVocabSize;
+        manager.copy(*promptVocabSizeHost, *promptVocabSize);
     }
 
     TLLM_LOG_TRACE("%s stop", __PRETTY_FUNCTION__);
@@ -281,6 +314,57 @@ void EncoderBuffers::setFromInputs(RequestVector const& requests, ModelConfig co
         }
     }
 
+    // Fill encoder prompt tuning buffers from per-request data
+    if (modelConfig.usePromptTuning())
+    {
+        NVTX3_SCOPED_RANGE(encoderPromptTuningCopies);
+        TLLM_CHECK_WITH_INFO(modelConfig.usePackedInput(),
+            "Encoder prompt tuning via prompt_embedding_table currently requires remove_input_padding to be enabled "
+            "(packed input).");
+
+        std::vector<SizeType32> tasksVec;
+        tasksVec.reserve(encoderInputLen);
+        SizeType32 batchIdx = 0;
+        for (auto const& llmReq : requests)
+        {
+            auto const reqInputLen = llmReq->getEncoderInputLen();
+            bool const hasPromptEmbeddingTable = llmReq->getPromptEmbeddingTable().has_value();
+            if (hasPromptEmbeddingTable)
+            {
+                llmReq->movePromptEmbeddingTableToGpu(manager);
+                auto reqPet = llmReq->getPromptEmbeddingTable().value();
+                TLLM_CHECK_WITH_INFO(llmReq->getPromptVocabSize().has_value(),
+                    "prompt_vocab_size must be provided when prompt_embedding_table is set.");
+                auto reqPvs = llmReq->getPromptVocabSize().value();
+
+                TLLM_CHECK_WITH_INFO(reqPvs <= mMaxPromptVocabSize,
+                    "Encoder prompt vocab size (%d) exceeds max (%d). "
+                    "max_prompt_embedding_table_size / max_batch_size = %d.",
+                    reqPvs, mMaxPromptVocabSize, mMaxPromptVocabSize);
+
+                // Copy request's embedding table into the batched table at the correct offset
+                TensorPtr reqPetView = ITensor::view(reqPet);
+                reqPetView->squeeze(0);
+                auto const petSlice
+                    = ITensor::slice(promptEmbeddingTable, batchIdx * mMaxPromptVocabSize, reqPvs);
+                manager.copy(*reqPetView, *petSlice);
+            }
+            auto const taskId = hasPromptEmbeddingTable ? batchIdx : 0;
+            // tasks is token-aligned in packed mode and must match flattened input_ids shape.
+            tasksVec.insert(tasksVec.end(), reqInputLen, taskId);
+            ++batchIdx;
+        }
+
+        TLLM_CHECK_WITH_INFO(static_cast<SizeType32>(tasksVec.size()) == encoderInputLen,
+            "Prompt tasks size (%d) must match flattened encoder input token count (%d).",
+            static_cast<SizeType32>(tasksVec.size()), encoderInputLen);
+        promptTasks->reshape(ITensor::makeShape({encoderInputLen}));
+        if (!tasksVec.empty())
+        {
+            manager.copy(tasksVec.data(), *promptTasks);
+        }
+    }
+
     TLLM_LOG_TRACE("%s stop", __PRETTY_FUNCTION__);
 }
 
@@ -315,6 +399,14 @@ void EncoderBuffers::fillIOMaps(ModelConfig const& modelConfig, WorldConfig cons
             if (tokenTypeIds)
             {
                 inputMap.insert_or_assign("token_type_ids", tokenTypeIds);
+            }
+            // Encoder prompt tuning (e.g., Florence2 p-tuning via virtual tokens).
+            // Only first PP rank has the embedding layer and prompt tuning inputs.
+            if (modelConfig.usePromptTuning())
+            {
+                inputMap.insert_or_assign("prompt_embedding_table", promptEmbeddingTable);
+                inputMap.insert_or_assign("tasks", promptTasks);
+                inputMap.insert_or_assign("prompt_vocab_size", promptVocabSize);
             }
         }
         else

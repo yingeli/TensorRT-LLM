@@ -89,6 +89,14 @@ private:
     std::vector<SizeType32> positionIdsReserved;
     std::vector<SizeType32> tokenTypeIdsReserved;
 
+    // Prompt tuning for encoder (e.g., Florence2 p-tuning via virtual tokens)
+    TensorPtr promptEmbeddingTable; // [maxPromptEmbeddingTableSize, hiddenSizeFull]
+    TensorPtr promptTasks;          // [numTokens], prompt tuning currently requires packed input
+    TensorPtr promptVocabSize;      // [1]
+    // Per-request prompt slot capacity.
+    // Assumption: maxPromptEmbeddingTableSize is evenly partitioned across maxBatchSize requests.
+    SizeType32 mMaxPromptVocabSize{0};
+
     // engine I/O
     TensorMap inputMap;
     TensorMap outputMap;
